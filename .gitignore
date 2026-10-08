@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+evidence/
+reports/
+scope/*.yaml
+!scope/example-authorization.yaml

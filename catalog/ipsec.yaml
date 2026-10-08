@@ -1,0 +1,86 @@
+protocol: ipsec
+controls:
+  - id: IPS-01
+    title: IKEv1 disabled, IKEv2 only
+    requirement: The gateway must not answer IKEv1; IKEv2 only.
+    baselines: ["NIST SP 800-77r1", "DISA VPN SRG"]
+    severity: high
+    remediation: Disable IKEv1 in the gateway configuration.
+  - id: IPS-02
+    title: No IKEv1 aggressive mode
+    requirement: Aggressive mode must not be offered — it exposes a PSK hash offline.
+    baselines: ["NIST SP 800-77r1", "DISA VPN SRG"]
+    severity: critical
+    remediation: Disable aggressive mode; use IKEv2.
+  - id: IPS-03
+    title: Approved IKE encryption
+    requirement: AES-GCM or AES-CBC >= 128-bit. DES and 3DES refused.
+    baselines: ["RFC 8247", "NIST SP 800-77r1"]
+    severity: high
+    remediation: Restrict the ike= proposal list to AES-GCM or AES-CBC 128+.
+  - id: IPS-04
+    title: DH group 14 or better
+    requirement: Groups 1, 2 and 5 refused; 14+ accepted, 19/20/21 preferred.
+    baselines: ["RFC 8247", "NIST SP 800-77r1"]
+    severity: high
+    remediation: Remove modp768/1024/1536; prefer ECP groups 19-21.
+  - id: IPS-05
+    title: SHA-2 PRF and integrity
+    requirement: No MD5 or SHA-1 integrity in the IKE proposal set.
+    baselines: ["RFC 8247"]
+    severity: medium
+    remediation: Drop -sha1 and -md5 transforms from ike=.
+  - id: IPS-06
+    title: ESP uses AEAD or AES + SHA-2
+    requirement: ENCR_NULL and SHA-1 refused for ESP.
+    baselines: ["RFC 8221"]
+    severity: medium
+    remediation: Drop -sha1 transforms from esp=; prefer AES-GCM.
+  - id: IPS-07
+    title: PFS on CHILD_SA rekey
+    requirement: A KE payload must be present on CREATE_CHILD_SA.
+    baselines: ["NIST SP 800-77r1"]
+    severity: medium
+    remediation: Enable PFS with an approved DH group.
+  - id: IPS-08
+    title: Certificate or EAP authentication
+    requirement: Cert (RSA >= 3072 or ECDSA P-256+) or EAP-TLS. PSK flagged.
+    baselines: ["NIST SP 800-77r1", "NIAP VPN Gateway PP"]
+    severity: high
+    remediation: Move from PSK to certificate or EAP-TLS authentication.
+  - id: IPS-09
+    title: Revoked and wrong-CA certificates rejected
+    requirement: Both must produce AUTHENTICATION_FAILED.
+    baselines: ["NIAP VPN Gateway PP"]
+    severity: critical
+    remediation: Enable CRL/OCSP checking and pin the expected CA.
+  - id: IPS-10
+    title: SA lifetimes within policy
+    requirement: IKE SA around 24h, CHILD SA around 8h, or site policy.
+    baselines: ["NIST SP 800-77r1"]
+    severity: low
+    remediation: Set ikelifetime and lifetime to policy values.
+  - id: IPS-11
+    title: Dead peer detection enabled
+    requirement: The gateway must probe and tear down dead SAs.
+    baselines: ["DISA VPN SRG"]
+    severity: low
+    remediation: Enable DPD with a sane delay and action.
+  - id: IPS-12
+    title: Version not on CISA KEV
+    requirement: The implementation version must not appear in the KEV catalog.
+    baselines: ["CISA KEV"]
+    severity: critical
+    remediation: Patch to a version not listed in the KEV catalog.
+  - id: IPS-13
+    title: Cookie defence under half-open SA load
+    requirement: The gateway issues a COOKIE notify when loaded.
+    baselines: ["RFC 7296"]
+    severity: medium
+    remediation: Enable cookie challenge thresholds.
+  - id: IPS-14
+    title: Only IKE and NAT-T ports exposed
+    requirement: UDP 500 and 4500 only; no management or extra services.
+    baselines: ["DISA VPN SRG"]
+    severity: high
+    remediation: Firewall off everything that is not required from the public side.

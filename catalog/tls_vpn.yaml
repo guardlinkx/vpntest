@@ -1,0 +1,74 @@
+protocol: tls_vpn
+controls:
+  - id: SSL-01
+    title: TLS 1.2+ only
+    requirement: SSLv3, TLS 1.0 and TLS 1.1 are not negotiated; 1.3 preferred.
+    baselines: ["NIST SP 800-52r2", "RFC 8996"]
+    severity: high
+    remediation: Disable TLS below 1.2 and enable 1.3.
+  - id: SSL-02
+    title: AEAD suites with ECDHE only
+    requirement: No RC4, 3DES, NULL, export or anonymous suites.
+    baselines: ["NIST SP 800-52r2", "RFC 9325"]
+    severity: high
+    remediation: Restrict the cipher list to ECDHE + AEAD.
+  - id: SSL-03
+    title: Valid server certificate
+    requirement: Trusted chain, RSA >= 2048 or ECDSA P-256+, SHA-256+, SAN matches.
+    baselines: ["NIST SP 800-52r2"]
+    severity: critical
+    remediation: Reissue with an adequate key and correct SANs.
+  - id: SSL-04
+    title: No compression, secure renegotiation
+    requirement: Not vulnerable to CRIME, Heartbleed or ROBOT.
+    baselines: ["RFC 9325"]
+    severity: high
+    remediation: Disable TLS compression; patch the TLS stack.
+  - id: SSL-05
+    title: Portal security headers
+    requirement: HSTS set; cookies Secure + HttpOnly + SameSite; no token in URL.
+    baselines: ["NIST SP 800-113"]
+    severity: medium
+    remediation: Add HSTS and set cookie flags.
+  - id: SSL-06
+    title: Appliance version not on CISA KEV
+    requirement: The portal version must not appear in the KEV catalog.
+    baselines: ["CISA KEV"]
+    severity: critical
+    remediation: Patch to a version not listed in the KEV catalog.
+  - id: SSL-07
+    title: MFA enforced on portal login
+    requirement: A password alone does not complete login.
+    baselines: ["DISA VPN SRG", "NIAP VPN Gateway PP"]
+    severity: high
+    remediation: Require a second factor for portal and full-tunnel login.
+  - id: SSL-08
+    title: Lockout and no username enumeration
+    requirement: Failed logins trigger lockout; responses do not distinguish users.
+    baselines: ["DISA VPN SRG"]
+    severity: medium
+    remediation: Add lockout and make failure responses identical.
+  - id: SSL-09
+    title: Session timeouts and logout
+    requirement: Idle and absolute timeouts; logout invalidates server-side.
+    baselines: ["NIST SP 800-113"]
+    severity: medium
+    remediation: Invalidate sessions server-side on logout and at timeout.
+  - id: SSL-10
+    title: Device posture or client certificate enforced
+    requirement: A non-compliant device is refused or quarantined where policy requires.
+    baselines: ["NIAP VPN Gateway PP"]
+    severity: medium
+    remediation: Enforce client certificates or posture checks.
+  - id: SSL-11
+    title: Admin interface not publicly reachable
+    requirement: No admin listener exposed on the public side.
+    baselines: ["DISA VPN SRG"]
+    severity: critical
+    remediation: Bind admin interfaces to a management network only.
+  - id: SSL-12
+    title: DTLS 1.2+ with approved suites
+    requirement: Where a DTLS data channel is used, only approved versions.
+    baselines: ["NIST SP 800-52r2"]
+    severity: medium
+    remediation: Disable DTLS 1.0.

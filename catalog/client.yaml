@@ -1,0 +1,83 @@
+protocol: client
+controls:
+  - id: CLI-01
+    title: No DNS leak
+    requirement: Every DNS query leaves through the tunnel.
+    baselines: ["NIAP VPN Client PP"]
+    severity: critical
+    remediation: Force DNS to tunnel resolvers and block queries on other interfaces.
+  - id: CLI-02
+    title: No IPv6 leak
+    requirement: IPv6 is blocked or tunnelled while the tunnel is IPv4-only.
+    baselines: ["NIAP VPN Client PP"]
+    severity: critical
+    notes: >
+      A tunnel with AllowedIPs 0.0.0.0/0 and no ::/0 carries no IPv6, so on a
+      dual-stack network every IPv6-capable destination bypasses the VPN
+      entirely. Very common and very quiet.
+    remediation: Route ::/0 into the tunnel, or disable IPv6 while connected.
+  - id: CLI-03
+    title: Kill switch blocks traffic on tunnel drop
+    requirement: No cleartext egress between a tunnel dropping and reconnecting.
+    baselines: ["DISA VPN SRG"]
+    severity: critical
+    remediation: Install a default-deny rule that only lifts when the tunnel is up.
+  - id: CLI-04
+    title: Split tunnel matches documented policy
+    requirement: The route table matches the policy file exactly.
+    baselines: ["DISA VPN SRG"]
+    severity: medium
+    remediation: Reconcile the client routes with policy.
+  - id: CLI-05
+    title: Resists DHCP option 121 route injection
+    requirement: Traffic stays in the tunnel under TunnelVision (CVE-2024-3661).
+    baselines: ["Published research"]
+    severity: high
+    remediation: Ignore classless static routes while connected, or bind to the tunnel.
+  - id: CLI-06
+    title: Resists LocalNet and ServerIP attacks
+    requirement: Traffic stays in the tunnel under TunnelCrack.
+    baselines: ["Published research"]
+    severity: high
+    remediation: Disable local network access while connected.
+  - id: CLI-07
+    title: No plaintext credentials or keys on disk
+    requirement: Nothing recoverable in plaintext from client storage.
+    baselines: ["NIAP VPN Client PP", "OWASP MASVS-STORAGE"]
+    severity: critical
+    remediation: Use the OS keystore (Keychain, DPAPI, Keystore).
+  - id: CLI-08
+    title: Binaries signed and updates verified
+    requirement: Client binaries are signed; updates arrive over TLS with signature checks.
+    baselines: ["NIAP VPN Client PP"]
+    severity: high
+    remediation: Sign releases and verify signatures before applying updates.
+  - id: CLI-09
+    title: Client service least privilege
+    requirement: The service holds no unnecessary privileges.
+    baselines: ["DISA VPN SRG"]
+    severity: medium
+    remediation: Drop privileges after the tunnel is established.
+  - id: CLI-10
+    title: Connection and auth events logged
+    requirement: Connect, disconnect and failed-auth reach the log sink.
+    baselines: ["DISA VPN SRG"]
+    severity: low
+    remediation: Emit events to the SIEM.
+  - id: CLI-11
+    title: Mobile transport security configured
+    requirement: >
+      iOS ATS not globally disabled; Android cleartext traffic disabled and
+      the network security config does not trust user CAs.
+    baselines: ["OWASP MASVS-NETWORK"]
+    severity: high
+    notes: Mobile equivalent of the desktop transport controls.
+    remediation: Remove NSAllowsArbitraryLoads; set cleartextTrafficPermitted=false.
+  - id: CLI-12
+    title: Mobile secret storage uses the platform keystore
+    requirement: >
+      Credentials and device identity live in Keychain or Android Keystore,
+      with an accessibility class that is not kSecAttrAccessibleAlways.
+    baselines: ["OWASP MASVS-STORAGE"]
+    severity: high
+    remediation: Use ThisDeviceOnly accessibility; never UserDefaults or SharedPreferences.

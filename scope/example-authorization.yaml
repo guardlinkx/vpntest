@@ -1,0 +1,40 @@
+# Authorization file — nothing is tested unless it appears here.
+#
+# The runner checks this for EVERY (check, target) pair, not once at startup,
+# so a check cannot wander onto a neighbouring host by following a redirect or
+# a hostname that starts resolving elsewhere mid-run.
+name: example-engagement
+authorized_by: "Name, Title — written authorization on file"
+
+window:
+  start: 2026-01-01T00:00:00Z
+  end:   2027-01-01T00:00:00Z
+
+# Disruptive checks are off unless listed here by id.
+allow_disruptive: []
+
+limits:
+  requests_per_second: 5
+  max_registrations: 8
+  max_login_attempts: 3
+
+targets:
+  - host: vpn.example.com
+    label: example-gateway
+    protocols: [ipsec, wireguard]
+    meta:
+      expected_tcp_ports: [443]
+      wg_port: 51820
+      # ssh_user / ssh_key enable the config-review checks (read-only).
+      # ssh_user: ubuntu
+      # ssh_key: ~/.ssh/id_ed25519
+
+  - host: api.example.com
+    label: example-api
+    protocols: [api]
+    meta:
+      api_base: https://api.example.com/api
+      endpoints:
+        - path: /some/mutating/endpoint
+          mutating: true
+          sample_body: {}

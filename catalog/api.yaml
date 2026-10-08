@@ -1,0 +1,62 @@
+protocol: api
+controls:
+  - id: API-01
+    title: No unauthenticated state change
+    requirement: >
+      Endpoints that grant entitlement, provision credentials or alter an
+      account must reject unauthenticated callers.
+    baselines: ["OWASP API Top 10 API5", "DISA VPN SRG"]
+    severity: critical
+    notes: >
+      This is the control that catches the highest-impact VPN API bug there
+      is: a purchase-verification endpoint that believes the client. Treat any
+      200 from an unauthenticated mutation as critical.
+    remediation: Require and verify authentication on every mutating endpoint.
+  - id: API-02
+    title: Purchase receipts verified with the store
+    requirement: >
+      Entitlement is granted only against a receipt cryptographically verified
+      with Apple or Google, never against client-supplied identifiers.
+    baselines: ["OWASP MASVS-AUTH", "Apple/Google IAP guidance"]
+    severity: critical
+    remediation: Verify the signed transaction (JWS) or call the store's server API.
+  - id: API-03
+    title: Entitlement expires
+    requirement: A granted entitlement carries an end date and access stops at it.
+    baselines: ["Org policy"]
+    severity: high
+    remediation: Record the store-provided expiry and enforce it on every access decision.
+  - id: API-04
+    title: No cross-tenant access (IDOR)
+    requirement: One device or account cannot read or mutate another's record.
+    baselines: ["OWASP API Top 10 API1"]
+    severity: critical
+    remediation: Scope every lookup by the authenticated principal.
+  - id: API-05
+    title: Credential issuance is rate limited
+    requirement: >
+      Endpoints that mint licences, devices or VPN credentials are rate
+      limited per source.
+    baselines: ["OWASP API Top 10 API4"]
+    severity: high
+    remediation: Apply per-IP and per-device rate limits with backoff.
+  - id: API-06
+    title: Transport is TLS with a valid chain
+    requirement: API endpoints are HTTPS only, with a trusted, current certificate.
+    baselines: ["NIST SP 800-52r2", "RFC 9325"]
+    severity: critical
+    remediation: Redirect HTTP to HTTPS and keep the chain valid.
+  - id: API-07
+    title: No secrets in responses
+    requirement: >
+      Responses do not leak internal addresses, node secrets, tokens or
+      another user's data.
+    baselines: ["OWASP API Top 10 API3"]
+    severity: high
+    remediation: Return only fields the caller needs.
+  - id: API-08
+    title: Administrative endpoints authenticated
+    requirement: Admin routes require a secret and fail closed when unconfigured.
+    baselines: ["DISA VPN SRG", "OWASP API Top 10 API5"]
+    severity: critical
+    remediation: Gate admin routes on a strong token compared in constant time.
