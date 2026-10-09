@@ -85,6 +85,15 @@ class IkeVersionExposure(Check):
         v1_alive, v1_data = _probe_ike(target.host, IKE_PORT, version=0x10)
         detail["ikev2_responded"] = v2_alive
         detail["ikev1_responded"] = v1_alive
+
+        # An IKEv2-only gateway still answers an IKEv1 packet, with an
+        # Informational exchange refusing it. Only a non-Informational IKEv1
+        # reply means the v1 stack is actually serving.
+        v1_serving = False
+        if v1_data and len(v1_data) >= 19:
+            v1_exchange = v1_data[18]
+            detail["ikev1_exchange_type"] = v1_exchange
+            v1_serving = (v1_data[17] >> 4) == 1 and v1_exchange != 5
         if v2_data:
             detail["ikev2_reply_hex"] = v2_data[:64].hex()
         if v1_data:
@@ -99,12 +108,15 @@ class IkeVersionExposure(Check):
                 "Nothing answered IKE on UDP/500 — either no IPsec here, or it "
                 "is silent to malformed initiators (some gateways are)",
                 evidence=[ev], detail=detail)]
-        if v1_alive:
+        if v1_serving:
             return [self.fail(
-                target, "The gateway responded to an IKEv1 exchange",
+                target, "The gateway serves IKEv1, not only IKEv2",
                 severity=Severity.HIGH, evidence=[ev], detail=detail)]
         return [self.ok(
-            target, "IKEv2 responds; IKEv1 does not", evidence=[ev], detail=detail)]
+            target,
+            "IKEv2 responds; IKEv1 is refused"
+            + (" (Informational rejection)" if v1_alive else " (no reply)"),
+            evidence=[ev], detail=detail)]
 
 
 class GatewayPortExposure(Check):
