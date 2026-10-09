@@ -61,6 +61,7 @@ class UnauthenticatedMutation(Check):
         base = _api_base(target).rstrip("/")
         findings: List[Finding] = []
         accepted: List[Dict[str, Any]] = []
+        by_design: List[Dict[str, Any]] = []
         transcript = []
 
         for ep in _endpoints(target):
@@ -81,7 +82,7 @@ class UnauthenticatedMutation(Check):
             transcript.append(
                 f"POST {path} -> {resp.status_code} {resp.text[:200]}"
             )
-            if resp.status_code == 200:
+            if 200 <= resp.status_code < 300:
                 try:
                     payload = resp.json()
                 except ValueError:
@@ -89,7 +90,16 @@ class UnauthenticatedMutation(Check):
                 # A 200 carrying an error is a refusal in disguise, which is
                 # sloppy but not a grant.
                 if not payload.get("error"):
-                    accepted.append({"path": path, "body": payload})
+                    # Some endpoints are unauthenticated on purpose — anonymous
+                    # device enrolment, for instance. The scope must say so
+                    # explicitly and give a reason, which is then carried into
+                    # the report as an accepted exception rather than silently
+                    # dropped. Unjustified exceptions do not count.
+                    reason = ep.get("expected_unauthenticated")
+                    if reason:
+                        by_design.append({"path": path, "reason": str(reason)})
+                    else:
+                        accepted.append({"path": path, "body": payload})
 
             time.sleep(1.0 / max(ctx.rate_limit("requests_per_second", 5), 1))
 
@@ -97,22 +107,26 @@ class UnauthenticatedMutation(Check):
                                "\n".join(transcript),
                                "unauthenticated POST transcript")
 
+        detail = {"accepted": accepted, "unauthenticated_by_design": by_design}
+
         if accepted:
             findings.append(self.fail(
                 target,
                 f"{len(accepted)} mutating endpoint(s) accepted an "
                 f"unauthenticated request: "
                 + ", ".join(a["path"] for a in accepted),
-                severity=Severity.CRITICAL,
-                evidence=[ev],
-                detail={"accepted": accepted},
+                severity=Severity.CRITICAL, evidence=[ev], detail=detail,
             ))
         else:
+            note = ""
+            if by_design:
+                note = (f" ({len(by_design)} unauthenticated by design: "
+                        + ", ".join(b["path"] for b in by_design) + ")")
             findings.append(self.ok(
                 target,
-                f"All {len(transcript)} probed mutating endpoints refused "
-                "unauthenticated requests",
-                evidence=[ev],
+                f"No unintended unauthenticated mutations across "
+                f"{len(transcript)} probes" + note,
+                evidence=[ev], detail=detail,
             ))
         return findings
 
@@ -159,7 +173,7 @@ class ReceiptForgery(Check):
             except ValueError:
                 payload = {}
             transcript.append(f"{label}: {resp.status_code} {resp.text[:250]}")
-            if resp.status_code == 200 and not payload.get("error"):
+            if 200 <= resp.status_code < 300 and not payload.get("error"):
                 granted.append(label)
             time.sleep(0.5)
 
@@ -207,7 +221,10 @@ class CredentialIssuanceRateLimit(Check):
                 codes.append("err")
                 continue
             codes.append(resp.status_code)
-            if resp.status_code == 200:
+            # Any 2xx is a successful issuance. Counting only 200 made this
+            # report "throttled" against an endpoint returning 201 Created —
+            # a security check claiming a control exists when it does not.
+            if 200 <= resp.status_code < 300:
                 issued += 1
             time.sleep(0.2)
 
@@ -263,7 +280,7 @@ class AdminEndpointAuth(Check):
                     transcript.append(f"{path} [{label}]: failed: {exc}")
                     continue
                 transcript.append(f"{path} [{label}]: {resp.status_code} {resp.text[:160]}")
-                if resp.status_code == 200:
+                if 200 <= resp.status_code < 300:
                     open_routes.append(f"{path} ({label})")
                 time.sleep(0.3)
 
