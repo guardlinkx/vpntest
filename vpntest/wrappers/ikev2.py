@@ -124,11 +124,16 @@ def build_sa_init(encr: Tuple[int, Optional[int]], prf: int, integ: int,
     first_payload = PAYLOAD_SA
     body = b""
     if cookie is not None:
-        # A COOKIE notify must come first when echoing one back.
-        notify = struct.pack("!BBHBBH", 0, 0, 0, 0, 0, 16390)[:8]
-        notify = struct.pack("!BBH", PAYLOAD_SA, 0, 8 + len(cookie)) + \
-                 struct.pack("!BBH", 0, 0, 16390) + cookie
-        body += notify
+        # RFC 7296 2.6: when the responder demands a cookie, the retry must
+        # carry it in a NOTIFY payload placed FIRST, before the SA payload.
+        #
+        # The notify payload body is protocol_id(1) + spi_size(1) +
+        # message_type(2) + data — four bytes, not six. Writing a six-byte
+        # header shifted the cookie by two bytes, so the responder saw a
+        # corrupt cookie and re-challenged forever. Every probe after the
+        # gateway started demanding cookies then read as "refused".
+        notify_body = struct.pack("!BBH", 0, 0, 16390) + cookie
+        body += struct.pack("!BBH", PAYLOAD_SA, 0, 4 + len(notify_body)) + notify_body
         first_payload = PAYLOAD_NOTIFY
 
     body += _sa_payload(transforms, PAYLOAD_KE)
@@ -201,7 +206,7 @@ def parse_response(data: bytes) -> Dict:
 def probe(host: str, encr: Tuple[int, Optional[int]], prf: int, integ: int,
           dh: int, port: int = IKE_PORT, timeout: float = 3.0,
           retries: int = 1, cookie: Optional[bytes] = None,
-          _depth: int = 0) -> Dict:
+          spi: Optional[bytes] = None, _depth: int = 0) -> Dict:
     """Offer one transform set and report what came back.
 
     A COOKIE notify is not a refusal: RFC 7296 section 2.6 says the initiator
@@ -209,8 +214,14 @@ def probe(host: str, encr: Tuple[int, Optional[int]], prf: int, integ: int,
     every transform read as "refused" once the gateway was under load, which
     would report a permissive gateway as a clean one.
     """
+    # One SPI for this probe and its cookie retry. strongSwan binds the
+    # cookie it issues to the initiator SPI that asked for it, so retrying
+    # with a fresh SPI looks like a brand-new initiator and is challenged
+    # again — the retry never converged and every probe after the gateway
+    # began demanding cookies was recorded as "refused".
+    spi = spi or os.urandom(8)
     for _ in range(retries + 1):
-        pkt, _spi = build_sa_init(encr, prf, integ, dh, cookie=cookie)
+        pkt, _spi = build_sa_init(encr, prf, integ, dh, spi=spi, cookie=cookie)
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(timeout)
         try:
@@ -221,10 +232,13 @@ def probe(host: str, encr: Tuple[int, Optional[int]], prf: int, integ: int,
 
             challenge = next((n for n in parsed.get("notifies", [])
                               if n["name"] == "COOKIE"), None)
-            if challenge and _depth == 0:
+            if challenge and _depth < 3:
+                # A busy gateway may issue a fresh cookie on the retry, so
+                # follow the chain a few times before giving up. Bounded, to
+                # avoid chasing a gateway that is simply refusing.
                 parsed = probe(host, encr, prf, integ, dh, port, timeout,
                                retries, cookie=bytes.fromhex(challenge["data"]),
-                               _depth=1)
+                               spi=spi, _depth=_depth + 1)
                 parsed["retried_with_cookie"] = True
             return parsed
         except (socket.timeout, OSError):
@@ -245,6 +259,19 @@ def accepted(result: Dict) -> bool:
     if "COOKIE" in names and not result.get("retried_with_cookie"):
         return False
     return bool(result.get("accepted"))
+
+
+def undetermined(result: Dict) -> bool:
+    """True when the probe never got a policy answer.
+
+    A gateway under cookie pressure answers with a challenge rather than a
+    verdict. Scoring that as "refused" is how a permissive gateway gets
+    reported as a clean one, so checks must treat it as unknown.
+    """
+    if not result.get("answered"):
+        return True
+    names = {n["name"] for n in result.get("notifies", [])}
+    return "COOKIE" in names and not result.get("accepted")
 
 
 def rejected_reason(result: Dict) -> str:

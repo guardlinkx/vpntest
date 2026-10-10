@@ -76,11 +76,13 @@ def _baseline_ok(target: Target) -> Tuple[bool, str]:
 
 
 def _sweep(target: Target, ctx: Context, kind: str,
-           candidates) -> Tuple[Dict[str, bool], List[str], List[str]]:
+           candidates) -> Tuple[Dict[str, Optional[bool]], List[str],
+                                List[str], List[str]]:
     """Offer each candidate alone; return accepted map plus policy verdicts."""
-    results: Dict[str, bool] = {}
+    results: Dict[str, Optional[bool]] = {}
     bad_accepted: List[str] = []
     good_refused: List[str] = []
+    undetermined: List[str] = []
     pace = 1.0 / max(ctx.rate_limit("requests_per_second", 5), 1)
 
     for label, value, allowed in candidates:
@@ -98,14 +100,40 @@ def _sweep(target: Target, ctx: Context, kind: str,
                           value, ike.BASE["dh"])
 
         ok = ike.accepted(r)
-        results[label] = ok
-        if ok and not allowed:
-            bad_accepted.append(label)
-        if not ok and allowed:
-            good_refused.append(label)
+        # A probe that drew no answer at all tells us nothing: UDP is lossy
+        # and a busy gateway drops SA_INITs. Retry once before recording a
+        # refusal, or transient loss gets written down as policy.
+        if not ok and not r.get("answered"):
+            time.sleep(pace)
+            if kind == "encr":
+                r = ike.probe(target.host, value, ike.BASE["prf"],
+                              ike.BASE["integ"], ike.BASE["dh"], retries=1)
+            elif kind == "dh":
+                r = ike.probe(target.host, ike.BASE["encr"], ike.BASE["prf"],
+                              ike.BASE["integ"], value, retries=1)
+            elif kind == "prf":
+                r = ike.probe(target.host, ike.BASE["encr"], value,
+                              ike.BASE["integ"], ike.BASE["dh"], retries=1)
+            else:
+                r = ike.probe(target.host, ike.BASE["encr"], ike.BASE["prf"],
+                              value, ike.BASE["dh"], retries=1)
+            ok = ike.accepted(r)
+
+        # Three states, not two. A gateway issuing cookie challenges gives no
+        # policy answer at all, and recording that as "refused" would report a
+        # permissive gateway as a clean one.
+        if not ok and ike.undetermined(r):
+            results[label] = None
+            undetermined.append(label)
+        else:
+            results[label] = ok
+            if ok and not allowed:
+                bad_accepted.append(label)
+            if not ok and allowed:
+                good_refused.append(label)
         time.sleep(pace)
 
-    return results, bad_accepted, good_refused
+    return results, bad_accepted, good_refused, undetermined
 
 
 class IkeEncryption(Check):
@@ -120,7 +148,7 @@ class IkeEncryption(Check):
         if not ok:
             return [self.error(target, why)]
 
-        results, bad, _ = _sweep(target, ctx, "encr", ENCR_CANDIDATES)
+        results, bad, _, unknown = _sweep(target, ctx, "encr", ENCR_CANDIDATES)
         ev = ctx.evidence.data(self.id, target.host.replace(".", "_"), results,
                                "one-transform IKE encryption sweep")
         if bad:
@@ -129,8 +157,10 @@ class IkeEncryption(Check):
                 severity=Severity.CRITICAL if "NULL" in " ".join(bad) else Severity.HIGH,
                 evidence=[ev], detail=results)]
         accepted = [k for k, v in results.items() if v]
+        note = f" ({len(unknown)} undetermined)" if unknown else ""
         return [self.ok(
-            target, "Only approved encryption accepted: " + ", ".join(accepted),
+            target,
+            "Only approved encryption accepted: " + ", ".join(accepted) + note,
             evidence=[ev], detail=results)]
 
 
@@ -146,7 +176,7 @@ class IkeDhGroups(Check):
         if not ok:
             return [self.error(target, why)]
 
-        results, bad, _ = _sweep(target, ctx, "dh", DH_CANDIDATES)
+        results, bad, _, unknown = _sweep(target, ctx, "dh", DH_CANDIDATES)
         ev = ctx.evidence.data(self.id, target.host.replace(".", "_"), results,
                                "Diffie-Hellman group sweep")
 
@@ -157,7 +187,16 @@ class IkeDhGroups(Check):
                 severity=Severity.HIGH, evidence=[ev], detail=results))
         modern = [k for k, v in results.items()
                   if v and ("ecp" in k or "x25519" in k)]
-        if not modern and not bad:
+        ec_unknown = [k for k in unknown if "ecp" in k or "x25519" in k]
+        if not modern and not bad and ec_unknown:
+            findings.append(self.warn(
+                target,
+                "Could not determine whether elliptic-curve groups are "
+                "accepted — the gateway answered with cookie challenges for "
+                + ", ".join(ec_unknown)
+                + ". Re-run when it is less busy.",
+                severity=Severity.LOW, evidence=[ev], detail=results))
+        elif not modern and not bad:
             findings.append(self.warn(
                 target,
                 "No elliptic-curve group accepted; groups 19-21 or x25519 are "
@@ -183,8 +222,9 @@ class IkePrfAndIntegrity(Check):
         if not ok:
             return [self.error(target, why)]
 
-        prf_res, prf_bad, _ = _sweep(target, ctx, "prf", PRF_CANDIDATES)
-        int_res, int_bad, _ = _sweep(target, ctx, "integ", INTEG_CANDIDATES)
+        prf_res, prf_bad, _, prf_unknown = _sweep(target, ctx, "prf", PRF_CANDIDATES)
+        int_res, int_bad, _, int_unknown = _sweep(target, ctx, "integ", INTEG_CANDIDATES)
+        unknown = prf_unknown + int_unknown
 
         detail = {"prf": prf_res, "integrity": int_res}
         ev = ctx.evidence.data(self.id, target.host.replace(".", "_"), detail,

@@ -148,6 +148,52 @@ def test_cookie_challenge_is_not_a_refusal():
     assert not ike.accepted(refused)
 
 
+def test_cookie_retry_reuses_the_initiator_spi():
+    """strongSwan binds a cookie to the SPI that asked for it.
+
+    Retrying with a fresh SPI looks like a new initiator and gets challenged
+    again forever, so every probe after a gateway starts demanding cookies was
+    recorded as "refused" — turning load into a false clean result.
+    """
+    import inspect
+    from vpntest.wrappers import ikev2 as ike
+    src = inspect.getsource(ike.probe)
+    assert "spi=spi" in src, "cookie retry must reuse the initiator SPI"
+    assert "spi = spi or os.urandom(8)" in src
+
+
+def test_cookie_notify_payload_header_is_four_bytes():
+    """NOTIFY body = protocol(1) + spi_size(1) + message_type(2) + data."""
+    import struct
+    from vpntest.wrappers import ikev2 as ike
+    cookie = bytes(range(24))
+    pkt, _ = ike.build_sa_init(ike.BASE["encr"], ike.BASE["prf"],
+                               ike.BASE["integ"], ike.BASE["dh"], cookie=cookie)
+    assert pkt[16] == ike.PAYLOAD_NOTIFY        # notify comes first
+    _next, _crit, plen = struct.unpack("!BBH", pkt[28:32])
+    assert plen == 4 + 4 + len(cookie), f"notify payload length {plen}"
+    # The cookie must land immediately after the 4-byte notify body header.
+    assert pkt[36:36 + len(cookie)] == cookie
+
+
+def test_undetermined_is_not_a_refusal():
+    """A cookie challenge is not a policy answer.
+
+    Scored as "refused", a gateway that accepts weak transforms but is busy
+    would be reported as correctly rejecting them.
+    """
+    from vpntest.wrappers import ikev2 as ike
+    cookie_only = {"answered": True, "accepted": None,
+                   "notifies": [{"name": "COOKIE", "type": 16390, "data": "ab"}]}
+    assert ike.undetermined(cookie_only)
+    assert not ike.accepted(cookie_only)
+    silent = {"answered": False, "accepted": None, "notifies": []}
+    assert ike.undetermined(silent)
+    real_refusal = {"answered": True, "accepted": None,
+                    "notifies": [{"name": "NO_PROPOSAL_CHOSEN", "type": 14, "data": ""}]}
+    assert not ike.undetermined(real_refusal)
+
+
 def test_hostname_matching_respects_wildcard_label_depth():
     from vpntest.checks.tls_vpn.crypto import _host_matches
     assert _host_matches("api.example.com", ["api.example.com"])
