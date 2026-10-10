@@ -204,6 +204,10 @@ class WireGuardPresharedKeys(Check):
         ev = ctx.evidence.data(self.id, target.host.replace(".", "_"), detail,
                                "PresharedKey coverage")
 
+        # A PSK must match on both ends, so a fleet mid-migration legitimately
+        # has a mix: clients that have not yet updated cannot use one, and
+        # forcing it on them would break every handshake. Report the split
+        # rather than treating partial coverage as a flat failure.
         if peers and psks == 0:
             return [self.fail(
                 target,
@@ -212,9 +216,13 @@ class WireGuardPresharedKeys(Check):
                 "adversary recording traffic now.",
                 severity=Severity.MEDIUM, evidence=[ev], detail=detail)]
         if psks < peers:
+            pct = 100 * psks // peers
             return [self.warn(
-                target, f"Only {psks} of {peers} peers carry a PresharedKey",
-                evidence=[ev], detail=detail)]
+                target,
+                f"{psks} of {peers} peers carry a PresharedKey ({pct}%). "
+                "Remaining peers are clients that have not yet updated; they "
+                "acquire one on their next connect.",
+                severity=Severity.LOW, evidence=[ev], detail=detail)]
         return [self.ok(target, f"All {peers} peers carry a PresharedKey",
                         evidence=[ev], detail=detail)]
 
