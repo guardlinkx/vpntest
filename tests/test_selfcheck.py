@@ -102,6 +102,52 @@ def test_weak_transform_regex_does_not_overmatch():
     assert not WEAK_RE.search("modp2048")
 
 
+def test_privileged_globs_expand_inside_the_root_shell():
+    """`sudo stat /etc/root-only/*` expands as the LOGIN user.
+
+    The glob matches nothing it cannot read, so stat receives the literal
+    pattern and returns nothing — and a check that counted the result as
+    "0 files, all fine" reported a clean pass on a CRITICAL control it had
+    never examined. Any privileged glob must sit inside `sudo sh -c '...'`.
+    """
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent / "vpntest" / "checks"
+    offenders = []
+    for path in root.rglob("*.py"):
+        for num, line in enumerate(path.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            # A sudo command containing a glob but not wrapped in sh -c.
+            if "sudo " not in line or "sh -c" in line:
+                continue
+            # A shell glob is a bare * in a path argument. A * inside a quoted
+            # regex (grep -E ':\s*PSK') is not one, so look for * adjacent to
+            # a path separator or extension.
+            if re.search(r'sudo\s+(stat|cat|ls|grep)\b[^\n]*'
+                         r'(/\*|\*\.|\*[a-z]*\*)', line):
+                offenders.append(f"{path.name}:{num}")
+    assert not offenders, f"unwrapped privileged globs: {offenders}"
+
+
+def test_cookie_challenge_is_not_a_refusal():
+    """RFC 7296 2.6: COOKIE means retry, not reject.
+
+    Scored as a rejection, every transform reads as "refused" once the gateway
+    is under load — reporting a permissive gateway as a clean one.
+    """
+    from vpntest.wrappers import ikev2 as ike
+    cookie_only = {"answered": True, "accepted": None,
+                   "notifies": [{"name": "COOKIE", "type": 16390, "data": "ab"}]}
+    assert not ike.accepted(cookie_only)          # unanswered: unknown, not pass
+    retried = {"answered": True, "accepted": {1: [12]}, "notifies": [],
+               "retried_with_cookie": True}
+    assert ike.accepted(retried)                  # answered after retry
+    refused = {"answered": True, "accepted": None,
+               "notifies": [{"name": "NO_PROPOSAL_CHOSEN", "type": 14, "data": ""}]}
+    assert not ike.accepted(refused)
+
+
 def test_hostname_matching_respects_wildcard_label_depth():
     from vpntest.checks.tls_vpn.crypto import _host_matches
     assert _host_matches("api.example.com", ["api.example.com"])

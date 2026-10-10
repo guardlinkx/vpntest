@@ -229,8 +229,11 @@ class CertificateValidation(Check):
 
         strictcrl = re.search(r"^\s*strictcrlpolicy\s*=\s*(\S+)", text, re.M | re.I)
         revocation = re.search(r"revocation\s*{", text, re.I)
+        # Glob/listing of a root-only directory must run inside the root
+        # shell, or it silently returns nothing and the CA count reads 0.
         rc, cacerts, _ = _ssh(
-            target, "sudo ls /etc/ipsec.d/cacerts/ 2>/dev/null | wc -l")
+            target,
+            "sudo sh -c 'ls /etc/ipsec.d/cacerts/ 2>/dev/null | wc -l'")
         ca_count = 0
         try:
             ca_count = int(cacerts.strip().splitlines()[-1])

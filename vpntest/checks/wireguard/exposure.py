@@ -91,13 +91,17 @@ class WireGuardKeyPermissions(Check):
         return _has_ssh(target)
 
     def run(self, target: Target, ctx: Context) -> List[Finding]:
-        cmd = ("sudo stat -c '%n %a %U' /etc/wireguard/*.conf "
-               "/etc/wireguard/*private* 2>/dev/null || true")
+        # Glob inside the root shell: expanded by the login user it matches
+        # nothing, and this check then reported "0 files, all owner-only" —
+        # a clean pass on a critical control it had not actually examined.
+        cmd = ("sudo sh -c 'stat -c \"%n %a %U\" /etc/wireguard/*.conf "
+               "/etc/wireguard/*private* 2>/dev/null' || true")
         rc, out, err = _ssh(target, cmd)
         if rc != 0 and not out:
             return [self.error(target, f"Could not read key permissions: {err.strip()[:200]}")]
 
         bad, rows = [], []
+
         for line in out.strip().splitlines():
             parts = line.split()
             if len(parts) != 3:
@@ -115,6 +119,11 @@ class WireGuardKeyPermissions(Check):
             return [self.fail(
                 target, "Readable beyond the owner: " + ", ".join(bad),
                 severity=Severity.CRITICAL, evidence=[ev], detail={"files": rows})]
+        if not rows:
+            return [self.error(
+                target,
+                "No WireGuard key or config files could be examined, so "
+                "permissions were not verified")]
         return [self.ok(
             target, f"All {len(rows)} key/config files are owner-only",
             evidence=[ev], detail={"files": rows})]

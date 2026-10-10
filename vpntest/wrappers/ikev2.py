@@ -200,10 +200,17 @@ def parse_response(data: bytes) -> Dict:
 
 def probe(host: str, encr: Tuple[int, Optional[int]], prf: int, integ: int,
           dh: int, port: int = IKE_PORT, timeout: float = 3.0,
-          retries: int = 1) -> Dict:
-    """Offer one transform set and report what came back."""
+          retries: int = 1, cookie: Optional[bytes] = None,
+          _depth: int = 0) -> Dict:
+    """Offer one transform set and report what came back.
+
+    A COOKIE notify is not a refusal: RFC 7296 section 2.6 says the initiator
+    should retry with the cookie echoed back. Treating it as a rejection made
+    every transform read as "refused" once the gateway was under load, which
+    would report a permissive gateway as a clean one.
+    """
     for _ in range(retries + 1):
-        pkt, _spi = build_sa_init(encr, prf, integ, dh)
+        pkt, _spi = build_sa_init(encr, prf, integ, dh, cookie=cookie)
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(timeout)
         try:
@@ -211,6 +218,14 @@ def probe(host: str, encr: Tuple[int, Optional[int]], prf: int, integ: int,
             data, _ = sock.recvfrom(8192)
             parsed = parse_response(data)
             parsed["answered"] = True
+
+            challenge = next((n for n in parsed.get("notifies", [])
+                              if n["name"] == "COOKIE"), None)
+            if challenge and _depth == 0:
+                parsed = probe(host, encr, prf, integ, dh, port, timeout,
+                               retries, cookie=bytes.fromhex(challenge["data"]),
+                               _depth=1)
+                parsed["retried_with_cookie"] = True
             return parsed
         except (socket.timeout, OSError):
             continue
@@ -225,6 +240,9 @@ def accepted(result: Dict) -> bool:
         return False
     names = {n["name"] for n in result.get("notifies", [])}
     if "NO_PROPOSAL_CHOSEN" in names or "INVALID_KE_PAYLOAD" in names:
+        return False
+    # An unanswered COOKIE challenge means we never learned the answer.
+    if "COOKIE" in names and not result.get("retried_with_cookie"):
         return False
     return bool(result.get("accepted"))
 
