@@ -228,25 +228,36 @@ class CredentialIssuanceRateLimit(Check):
                 issued += 1
             time.sleep(0.2)
 
+        throttled = sum(1 for c in codes if c == 429)
         ev = ctx.evidence.data(self.id, str(target).replace(".", "_"),
-                               {"status_codes": codes, "issued": issued},
+                               {"status_codes": codes, "issued": issued,
+                                "throttled": throttled, "burst": burst},
                                f"{burst} back-to-back registrations")
 
-        if issued == burst:
-            return [self.fail(
+        if throttled:
+            return [self.ok(
                 target,
-                f"{issued}/{burst} back-to-back identity registrations all "
-                "succeeded — no rate limit on credential issuance",
-                severity=Severity.HIGH, evidence=[ev],
-            )]
-        if issued > burst * 0.6:
-            return [self.warn(
-                target,
-                f"{issued}/{burst} registrations succeeded; throttling looks weak",
+                f"Throttled after {issued} of {burst} attempts "
+                f"({throttled} rejected with 429)",
                 evidence=[ev],
             )]
-        return [self.ok(
-            target, f"Registration throttled after {issued}/{burst} attempts",
+        if issued == burst:
+            # Every attempt succeeded, which proves only that the limit is
+            # above `burst` — not that there is none. Saying "no rate limit"
+            # here would assert more than was observed, and a limit set just
+            # above the burst size would be reported as absent.
+            return [self.warn(
+                target,
+                f"All {burst} registrations succeeded with no 429. Either "
+                "there is no limit, or it is higher than "
+                f"{burst} per source — raise limits.max_registrations in the "
+                "scope above the expected threshold to distinguish the two.",
+                severity=Severity.HIGH, evidence=[ev],
+            )]
+        return [self.warn(
+            target,
+            f"{issued}/{burst} succeeded and {burst - issued} failed, but none "
+            "with 429 — the failures may be unrelated errors",
             evidence=[ev],
         )]
 
