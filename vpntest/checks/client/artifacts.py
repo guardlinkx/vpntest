@@ -374,21 +374,41 @@ class ClientPrivilege(Check):
 
         granted = [e for e in self.OVERBROAD if e in text]
         detail["overbroad"] = granted
+
         # get-task-allow in a shipping build means a debugger can attach.
-        debuggable = "get-task-allow" in text and "<true/>" in text
+        #
+        # The value has to be read from its own key, not inferred from the
+        # presence of "<true/>" anywhere in the blob. A correctly signed App
+        # Store build carries `get-task-allow = false` alongside
+        # `beta-reports-active = true`, and a substring test sees the key and
+        # sees a true and reports a debuggable binary — a HIGH finding on the
+        # exact artifact being shipped.
+        m = re.search(r"<key>\s*get-task-allow\s*</key>\s*<(\w+)\s*/>", text)
+        debuggable = bool(m) and m.group(1).lower() == "true"
+        detail["get_task_allow"] = m.group(1).lower() if m else "absent"
 
         ev = ctx.evidence.data(self.id, os.path.basename(path), detail,
                                "entitlements")
         if debuggable:
+            # The catalog remediation for this control is about privilege
+            # dropping, which is not what this specific finding is. A
+            # debuggable binary is a signing-profile problem, so name that
+            # instead of handing over advice that does not apply.
             return [self.fail(
                 target,
                 "get-task-allow is set — this is a development build and any "
                 "process can attach a debugger to it",
-                severity=Severity.HIGH, evidence=[ev], detail=detail)]
+                severity=Severity.HIGH, evidence=[ev], detail=detail,
+                remediation="Re-sign with a distribution profile. A development "
+                            "profile always sets this; an App Store or ad-hoc "
+                            "distribution export does not. Expected on a local "
+                            "build — verify against the archive you upload.")]
         if granted:
             return [self.warn(
                 target, "Broad entitlements requested: " + ", ".join(granted),
-                evidence=[ev], detail=detail)]
+                evidence=[ev], detail=detail,
+                remediation="Drop entitlements the client does not need, so a "
+                            "compromise of it gains nothing extra.")]
         return [self.ok(target, "No overbroad entitlements requested",
                         evidence=[ev], detail=detail)]
 

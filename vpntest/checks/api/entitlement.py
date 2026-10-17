@@ -33,8 +33,18 @@ def _base(target: Target) -> Optional[str]:
     return b.rstrip("/") if b else None
 
 
-def _enrol(target: Target) -> Optional[Dict[str, Any]]:
-    """Register a throwaway identity and return what the API gave back."""
+# Sentinel distinguishing "the endpoint throttled us" from "it broke".
+RATE_LIMITED = object()
+
+
+def _enrol(target: Target):
+    """Register a throwaway identity and return what the API gave back.
+
+    Returns RATE_LIMITED on a 429. That is not a failure of the endpoint — it
+    is the credential-issuance limit (API-05) doing its job — but it does mean
+    the checks that need a test identity cannot run, and they must say so
+    rather than reporting a fault.
+    """
     cfg = target.meta.get("register_endpoint")
     base = _base(target)
     if not cfg or not base:
@@ -45,6 +55,8 @@ def _enrol(target: Target) -> Optional[Dict[str, Any]]:
     body[field] = device_id
     try:
         r = requests.post(f"{base}{cfg['path']}", json=body, timeout=20)
+        if r.status_code == 429:
+            return RATE_LIMITED
         if not (200 <= r.status_code < 300):
             return None
         payload = r.json()
@@ -52,6 +64,13 @@ def _enrol(target: Target) -> Optional[Dict[str, Any]]:
         return None
     payload["_device_id"] = device_id
     return payload
+
+
+_THROTTLED_MSG = (
+    "The registration endpoint is rate limiting this source, so no test "
+    "identity could be created. That is API-05 working as intended. Re-run "
+    "after the window, or exempt the scanner's address, to test this control."
+)
 
 
 class EntitlementExpires(Check):
@@ -72,6 +91,8 @@ class EntitlementExpires(Check):
 
     def run(self, target: Target, ctx: Context) -> List[Finding]:
         enrolled = _enrol(target)
+        if enrolled is RATE_LIMITED:
+            return [self.na(target, _THROTTLED_MSG)]
         if not enrolled:
             return [self.error(target, "Could not enrol a test identity")]
 
@@ -152,6 +173,8 @@ class CrossTenantAccess(Check):
         a = _enrol(target)
         time.sleep(0.5)
         b = _enrol(target)
+        if a is RATE_LIMITED or b is RATE_LIMITED:
+            return [self.na(target, _THROTTLED_MSG)]
         if not a or not b:
             return [self.error(target, "Could not enrol two test identities")]
 
@@ -237,6 +260,8 @@ class ResponseSecretLeakage(Check):
         problems: List[str] = []
 
         enrolled = _enrol(target)
+        if enrolled is RATE_LIMITED:
+            enrolled = None   # probe with the scope's sample bodies instead
         key = (enrolled or {}).get(
             target.meta.get("license_key_field", "license_key"))
 

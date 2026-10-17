@@ -256,3 +256,27 @@ if __name__ == "__main__":
                 failed += 1
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+def test_get_task_allow_read_from_its_own_key():
+    """A distribution build carries get-task-allow=false AND another true.
+
+    `"get-task-allow" in text and "<true/>" in text` is satisfied by two
+    different entitlements: a correctly signed App Store build has
+    `get-task-allow = false` next to `beta-reports-active = true`. The
+    substring form reported the shipping artifact as debuggable.
+    """
+    import re
+
+    def debuggable(text):
+        m = re.search(r"<key>\s*get-task-allow\s*</key>\s*<(\w+)\s*/>", text)
+        return bool(m) and m.group(1).lower() == "true"
+
+    distribution = ("<key>beta-reports-active</key><true/>"
+                    "<key>get-task-allow</key><false/>")
+    development = ("<key>application-identifier</key><string>X</string>"
+                   "<key>get-task-allow</key><true/>")
+
+    assert not debuggable(distribution), "false positive on a shipping build"
+    assert debuggable(development), "false negative on a development build"
+    assert not debuggable("<key>beta-reports-active</key><true/>")

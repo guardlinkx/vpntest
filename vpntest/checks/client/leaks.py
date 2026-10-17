@@ -1,13 +1,25 @@
 """CLI-01 to CLI-06 — what escapes the tunnel.
 
-These are only meaningful from the endpoint while the tunnel is up, so they
-run against the host executing the tool. That makes the tool itself the test
-client, which is the honest arrangement: a leak is a property of this machine's
-routing and resolver state, not something inferable from the gateway.
+A leak is a property of the client, so it has to be measured at the client.
+There are two ways to stand there, and which one applies depends on what the
+client runs on:
 
-Every one reports `n/a` when no tunnel is up rather than passing, because "no
-leak observed while not connected" is not evidence of anything. A check that
-quietly passes when it could not run is worse than one that fails.
+* **On this host.** When the tool runs on the machine holding the tunnel, it
+  reads the routing table, resolvers and firewall directly. Precise, and the
+  only way to see firewall posture.
+* **On the network.** A phone cannot be asked for its routing table, so for a
+  mobile client the tool watches the segment the handset sits on and classifies
+  what leaves it. See `mobile_capture` and `wrappers/pcap`.
+
+The control is the same either way — CLI-02 is "IPv6 must not bypass the
+tunnel" however it was proven — so the two strategies share one id, one
+baseline and one verdict vocabulary. A target carrying `dut: true` is measured
+from the network; everything else is measured locally.
+
+Every check reports `n/a` rather than passing when it could not observe, because
+"no leak seen while not connected" — or while the phone sat idle — is not
+evidence of anything. A check that quietly passes when it did not run is worse
+than one that fails.
 """
 
 from __future__ import annotations
@@ -17,6 +29,7 @@ from typing import Any, Dict, List
 
 from ...model import Check, Context, Finding, Severity, Target
 from ...wrappers import netstate as ns
+from . import mobile_capture as mc
 
 
 def _tunnel_or_na(check: Check, target: Target, ctx: Context):
@@ -43,6 +56,9 @@ class DnsLeak(Check):
     access = "agent"
 
     def run(self, target: Target, ctx: Context) -> List[Finding]:
+        if mc.is_dut(target):
+            return self._from_network(target, ctx)
+
         blocked = _tunnel_or_na(self, target, ctx)
         if blocked:
             return [blocked]
@@ -70,6 +86,32 @@ class DnsLeak(Check):
             f"All {len(resolvers)} resolver(s) egress through {tun}",
             evidence=[ev], detail=detail)]
 
+    def _from_network(self, target: Target, ctx: Context) -> List[Finding]:
+        """A resolver query seen on the wire is a leak, with nothing inferred.
+
+        This is stronger evidence than the local variant: it does not ask what
+        the client intended to do, it records what it did.
+        """
+        blocked, obs = mc.precondition(self, target, ctx)
+        if blocked:
+            return [blocked]
+
+        from ...wrappers import pcap
+        leaked = obs["escaped_dns"]
+        if leaked:
+            return [self.fail(
+                target,
+                f"{len(leaked)} DNS query/queries left the device outside the "
+                f"tunnel, to {pcap.summarize_escapes(leaked)}. Every name the "
+                "user looked up was visible to the local network.",
+                severity=Severity.CRITICAL,
+                evidence=[obs["evidence"]], detail=obs)]
+        return [self.ok(
+            target,
+            f"No cleartext DNS in {obs['from_dut']} packets from the device "
+            f"over {obs['seconds']}s while the tunnel carried traffic",
+            evidence=[obs["evidence"]], detail=obs)]
+
 
 class Ipv6Leak(Check):
     """CLI-02 — IPv6 must be tunnelled or disabled, never left routed around."""
@@ -79,6 +121,9 @@ class Ipv6Leak(Check):
     access = "agent"
 
     def run(self, target: Target, ctx: Context) -> List[Finding]:
+        if mc.is_dut(target):
+            return self._from_network(target, ctx)
+
         blocked = _tunnel_or_na(self, target, ctx)
         if blocked:
             return [blocked]
@@ -113,6 +158,34 @@ class Ipv6Leak(Check):
         return [self.ok(target, f"IPv6 default route is inside the tunnel ({v6_iface})",
                         evidence=[ev], detail=detail)]
 
+    def _from_network(self, target: Target, ctx: Context) -> List[Finding]:
+        """Routable IPv6 observed leaving the device is a leak outright.
+
+        Link-local and multicast v6 are excluded upstream in `pcap.classify`:
+        neighbour discovery and MLD never leave the segment, and counting them
+        would make every correctly-configured client look broken.
+        """
+        blocked, obs = mc.precondition(self, target, ctx)
+        if blocked:
+            return [blocked]
+
+        from ...wrappers import pcap
+        leaked = obs["escaped_ipv6"]
+        if leaked:
+            return [self.fail(
+                target,
+                f"{len(leaked)} IPv6 packet(s) left the device outside the "
+                f"tunnel, to {pcap.summarize_escapes(leaked)}. On a dual-stack "
+                "network every IPv6-capable destination bypasses the VPN.",
+                severity=Severity.CRITICAL,
+                evidence=[obs["evidence"]], detail=obs)]
+        return [self.ok(
+            target,
+            "No routable IPv6 left the device outside the tunnel over "
+            f"{obs['seconds']}s ({obs['link_local_or_multicast']} link-local "
+            "or multicast packet(s) seen and correctly ignored)",
+            evidence=[obs["evidence"]], detail=obs)]
+
 
 class KillSwitch(Check):
     """CLI-03 — traffic must stop when the tunnel drops.
@@ -127,7 +200,15 @@ class KillSwitch(Check):
     protocol = "client"
     access = "agent"
 
+    # Opt-in id for the variant that actually breaks the tunnel. The class
+    # itself is not marked disruptive, because the local firewall-inspection
+    # form is read-only and should keep running by default.
+    BREAK_VARIANT = "CLI-03:break-tunnel"
+
     def run(self, target: Target, ctx: Context) -> List[Finding]:
+        if mc.is_dut(target):
+            return self._from_network(target, ctx)
+
         blocked = _tunnel_or_na(self, target, ctx)
         if blocked:
             return [blocked]
@@ -157,6 +238,77 @@ class KillSwitch(Check):
             "if the tunnel drops",
             severity=Severity.HIGH, evidence=[ev], detail=detail)]
 
+    def _from_network(self, target: Target, ctx: Context) -> List[Finding]:
+        """Break the tunnel and see whether the device keeps talking.
+
+        There is no way to infer this one from a healthy capture. A kill switch
+        is defined entirely by what happens when the tunnel fails, so observing
+        a working tunnel says nothing at all about it — hence `n/a` rather than
+        a pass when the disruptive variant is not enabled. Reporting a pass
+        here would be the worst kind of wrong: a confident green on the control
+        most likely to matter.
+        """
+        blocked, obs = mc.precondition(self, target, ctx)
+        if blocked:
+            return [blocked]
+
+        from ...wrappers import pcap
+
+        if self.BREAK_VARIANT not in (ctx.scope.allow_disruptive or []):
+            return [self.na(target, (
+                "A kill switch can only be proven by dropping the tunnel and "
+                "watching what the device does next, which briefly cuts its "
+                f"connectivity. Add '{self.BREAK_VARIANT}' to allow_disruptive "
+                "to enable it. The tunnel being healthy right now is not "
+                "evidence either way."), detail=obs)]
+
+        seconds = int(target.meta.get("killswitch_capture_seconds", 25))
+        print(f"    breaking the tunnel for {seconds}s — the phone should go "
+              "dark if the kill switch works; keep using it")
+
+        with pcap.Blackhole(obs["endpoints"]) as bh:
+            if not bh.installed:
+                return [self.error(target, (
+                    "Could not blackhole any VPN endpoint, so the tunnel was "
+                    "never broken and nothing was tested: "
+                    + "; ".join(bh.errors)), detail=obs)]
+            path, err = pcap.capture(obs["interface"], obs["dut_mac"], seconds)
+            packets = pcap.read_packets(path) if path else []
+
+        after = pcap.classify(packets, obs["dut_mac"], obs["endpoints"],
+                              pcap.segment_for(obs["interface"]))
+        detail = {"while_connected": obs, "after_tunnel_broken": after,
+                  "blackholed": bh.installed, "route_errors": bh.errors,
+                  "capture_error": err}
+        ev = ctx.evidence.data(self.id, str(target).replace(" ", "_"), detail,
+                               "traffic after the tunnel was broken")
+
+        # A restore failure has to surface loudly — it altered the operator's
+        # machine and left it that way.
+        unrestored = [e for e in bh.errors if "COULD NOT RESTORE" in e]
+        if unrestored:
+            return [self.error(target, "; ".join(unrestored), evidence=[ev],
+                               detail=detail)]
+        if not path:
+            return [self.error(target, f"capture after the break failed: {err}",
+                               evidence=[ev], detail=detail)]
+
+        escaped = after["escaped"]
+        if escaped:
+            return [self.fail(
+                target,
+                f"With the tunnel broken the device sent {len(escaped)} "
+                f"packet(s) in the clear, to {pcap.summarize_escapes(escaped)}. "
+                "There is no kill switch in effect: traffic falls back to the "
+                "physical interface.",
+                severity=Severity.CRITICAL, evidence=[ev], detail=detail)]
+        return [self.ok(
+            target,
+            f"With the tunnel broken the device sent nothing outside it over "
+            f"{seconds}s ({after['from_dut']} packet(s) seen, all local, "
+            "link-local or tunnel retries). The kill switch holds.",
+            evidence=[ev], detail=detail)]
+
 
 class SplitTunnelPolicy(Check):
     """CLI-04 — the route table must match the documented policy."""
@@ -166,6 +318,9 @@ class SplitTunnelPolicy(Check):
     access = "agent"
 
     def run(self, target: Target, ctx: Context) -> List[Finding]:
+        if mc.is_dut(target):
+            return self._from_network(target, ctx)
+
         blocked = _tunnel_or_na(self, target, ctx)
         if blocked:
             return [blocked]
@@ -208,6 +363,53 @@ class SplitTunnelPolicy(Check):
                 severity=Severity.MEDIUM, evidence=[ev], detail=detail)]
         return [self.ok(target, f"Route table matches the '{policy}' policy",
                         evidence=[ev], detail=detail)]
+
+    def _from_network(self, target: Target, ctx: Context) -> List[Finding]:
+        """Under a full-tunnel policy, nothing should leave except the tunnel.
+
+        DNS and IPv6 escapes are reported by CLI-01 and CLI-02; this one covers
+        everything else, so a finding here means ordinary application traffic
+        went out around the tunnel. The expected exclusions — local segment and
+        Apple push — are already separated by `pcap.classify`, and are reported
+        as counts so a reader can see what was permitted and why.
+        """
+        blocked, obs = mc.precondition(self, target, ctx)
+        if blocked:
+            return [blocked]
+
+        from ...wrappers import pcap
+        policy = target.meta.get("split_tunnel_policy")
+        if policy is None:
+            return [self.na(target, (
+                "No split_tunnel_policy declared in scope, so there is nothing "
+                "to compare the observed traffic against"), detail=obs)]
+
+        if policy != "full":
+            return [self.na(target, (
+                f"Policy is '{policy}'. Only a full-tunnel policy can be "
+                "checked from the network, because a split policy needs the "
+                "list of destinations that may legitimately bypass the tunnel "
+                "— declare split_tunnel_excluded to compare against."),
+                detail=obs)]
+
+        other = [e for e in obs["escaped"]
+                 if e not in obs["escaped_dns"] and e not in obs["escaped_ipv6"]]
+        allowed = (f"{obs['local_segment']} local-segment, {obs['apns']} Apple "
+                   f"push, {obs['link_local_or_multicast']} link-local or "
+                   "multicast packet(s) were correctly excluded")
+
+        if other:
+            return [self.fail(
+                target,
+                f"Policy is full-tunnel but {len(other)} packet(s) reached "
+                f"{pcap.summarize_escapes(other)} outside it",
+                severity=Severity.HIGH,
+                evidence=[obs["evidence"]], detail=obs)]
+        return [self.ok(
+            target,
+            f"All {obs['tunnel_carrier']} off-segment packet(s) went through "
+            f"the tunnel to {', '.join(obs['endpoints_seen'])}; {allowed}",
+            evidence=[obs["evidence"]], detail=obs)]
 
 
 class DhcpRouteInjection(Check):

@@ -43,8 +43,24 @@ def cmd_run(args) -> int:
     runner = Runner(scope, catalog, evidence, options={"verbose": args.verbose})
 
     protocols = args.protocol or None
-    only = args.only or None
+
+    # --only accepts both repeated flags and a comma-separated list, because
+    # typing the comma form is the obvious guess and silently selecting
+    # nothing is the worst possible response to it.
+    only = None
+    if args.only:
+        only = [cid.strip().upper()
+                for item in args.only for cid in item.split(",") if cid.strip()]
+        unknown = [c for c in only if c not in checks]
+        if unknown:
+            # Refuse rather than run a subset. An empty run prints an empty
+            # summary, which reads exactly like a clean pass.
+            print(f"==> no such control(s): {', '.join(unknown)}", file=sys.stderr)
+            return 2
+
     print(f"==> {len(checks)} check(s) available, {len(catalog)} control(s) in catalog")
+    if only:
+        print(f"==> limited to: {', '.join(only)}")
 
     findings = runner.run(checks, protocols=protocols, only=only)
     summary = summarize(findings)

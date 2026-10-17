@@ -89,11 +89,70 @@ credentials to whoever asks, which no protocol-level check would ever see.
 Config-review checks (`access: config`) read target state over SSH, read-only,
 and report `n/a` when the scope supplies no credentials.
 
+## Testing a phone
+
+A handset cannot be asked for its routing table, so the local measurements in
+`wrappers/netstate.py` cannot test a mobile client at all. Instead the tool
+watches the network the phone sits on and classifies what leaves it. Same
+controls — CLI-01 to CLI-04 — different instrument.
+
+Setup, on macOS:
+
+1. **System Settings > General > Sharing > Internet Sharing**, share your
+   connection to Wi-Fi, and turn it on. This creates `bridge100`.
+2. Join the phone to that Wi-Fi network.
+3. `sudo -v` in the shell you will run from — capture needs tcpdump as root.
+4. Add the device to your scope with `dut: true` (see `scope/califax.yaml`),
+   listing `vpn_endpoints` so tunnelled traffic can be told from a leak.
+5. Connect the VPN on the phone, confirm it reports connected, then run.
+6. **Use the phone while it captures.** Browse, stream, anything. A silent
+   handset produces `n/a`, not a pass — see below.
+
+```bash
+vpntest run --scope scope/califax.yaml --only CLI-01,CLI-02,CLI-04
+```
+
+The capture is taken once per run and shared by all four checks, so they
+cannot disagree about what was on the wire. The `.pcap` is kept as evidence
+with payload truncated to 128 bytes, which is enough to classify and holds no
+message content.
+
+**Classification is the part that matters.** "Anything not going to the VPN
+endpoint is a leak" is wrong and produces criticals on healthy clients, so
+these are excluded deliberately: link-local and multicast IPv6 (neighbour
+discovery, MLD, mDNS never leave the segment), the local subnet (clients
+rightly set `excludeLocalNetworks`), Apple push to 17.0.0.0/8 (`excludeAPNs`
+defaults true on iOS 16.4+ even with `includeAllNetworks`), and ARP. Each
+exclusion is counted in the finding so you can see what was permitted.
+
+**An empty capture is never a pass.** Below 20 packets from the device, or
+with no traffic to any declared endpoint, every check reports `n/a` with the
+reason. "No leaks observed" after observing nothing reads as a pass and is
+worth less than no result.
+
+### Proving the kill switch
+
+A kill switch is defined by what happens when the tunnel *fails*, so a healthy
+capture says nothing about it — CLI-03 reports `n/a` rather than guessing. To
+actually test it, opt in:
+
+```yaml
+allow_disruptive: ["CLI-03:break-tunnel"]
+```
+
+The tool then blackhole-routes the VPN endpoints on this machine (which is the
+phone's gateway), captures while the tunnel is down, and restores the routes
+afterwards. A route is used rather than a firewall rule so restoration is a
+single `route delete`; if restoration fails the check reports `error` and
+prints the command to undo it by hand. The phone loses connectivity for the
+duration.
+
 ## Known limits
 
-- **Client checks need an agent.** DNS/IPv6 leaks, kill switch and route
-  injection can only be proven from the endpoint while the tunnel is up. The
-  desktop agent is C#/.NET; mobile needs an on-device harness.
+- **Desktop client checks need an agent.** On a machine running the tunnel the
+  tool measures locally, but Windows posture (WFP filters, adapter metrics) is
+  not exposed cleanly to a subprocess and wants the C#/.NET agent. Mobile is
+  covered by the capture path above.
 - **No exploit code.** Vulnerable versions are identified by fingerprint and
   advisory lookup, never by exploitation.
 - **Deep IKE proposal enumeration** wants `ike-scan` or Scapy; the built-in

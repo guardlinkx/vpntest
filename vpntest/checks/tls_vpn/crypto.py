@@ -248,14 +248,24 @@ class TlsCertificate(Check):
             if days < 0:
                 findings.append(self.fail(
                     target, "Certificate has expired",
-                    severity=Severity.CRITICAL, detail=info))
+                    severity=Severity.CRITICAL, detail=info,
+                    remediation="Reissue and redeploy the certificate."))
             elif days < 21:
                 findings.append(self.warn(
-                    target, f"Certificate expires in {days} days", detail=info))
+                    target, f"Certificate expires in {days} days", detail=info,
+                    remediation="Confirm automatic renewal is running and will "
+                                "complete before expiry."))
             if not info["ocsp_stapled"]:
+                # The control's catalog remediation is about the certificate
+                # itself, which is not the problem here — the cert is fine and
+                # the gap is purely a server setting. Say the actual action.
                 findings.append(self.warn(
                     target, "No OCSP stapling — revocation cannot be checked cheaply",
-                    severity=Severity.LOW, detail=info))
+                    severity=Severity.LOW, detail=info,
+                    remediation="Enable OCSP stapling on the terminating server "
+                                "(nginx: ssl_stapling on, ssl_stapling_verify on, "
+                                "plus a resolver) so clients get revocation status "
+                                "in the handshake."))
 
         ev = ctx.evidence.data(self.id, target.host.replace(".", "_"), detail,
                                "certificate deployments")
