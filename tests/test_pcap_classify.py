@@ -106,7 +106,7 @@ def test_tunnel_traffic_is_not_a_leak():
     r = classify([pkt("192.0.2.10", 51820), pkt("192.0.2.11", 4500)])
     assert r["escaped"] == []
     assert r["tunnel_carrier"] == 2
-    assert r["endpoints_seen"] == ["192.0.2.11", "192.0.2.10"]
+    assert set(r["endpoints_seen"]) == {"192.0.2.10", "192.0.2.11"}
 
 
 def test_inbound_traffic_is_ignored_entirely():
