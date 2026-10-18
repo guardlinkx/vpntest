@@ -1,0 +1,30 @@
+protocol: logging
+# What a VPN keeps about its own users is a security property, and one almost
+# no audit checks. The industry convention is an unverifiable "no logs" claim;
+# these controls test the two things that can actually be observed — how much
+# is written, and how long it is kept — against a policy the operator declares
+# in scope. A narrow claim a reader can check beats a broad one nobody can.
+controls:
+  - id: LOG-01
+    title: Connection logging is minimised
+    requirement: >
+      The VPN daemon does not write per-connection detail — client identity,
+      source address, session timing — to a general-purpose system log. Verbose
+      debug levels are not enabled in normal operation.
+    baselines: ["GDPR Art. 5(1)(c)", "NIST SP 800-53 AU-11", "Org policy"]
+    severity: medium
+    remediation: >
+      Reduce the daemon's debug level, and route its output to a dedicated log
+      with its own short retention rather than the system auth or syslog file.
+
+  - id: LOG-02
+    title: Log retention matches the declared policy
+    requirement: >
+      No connection record is retained longer than the retention window the
+      operator declares. Rotation is configured and actually enforced, and no
+      archive predates the window.
+    baselines: ["GDPR Art. 5(1)(e)", "NIST SP 800-53 AU-11", "Org policy"]
+    severity: medium
+    remediation: >
+      Configure rotation for the connection log at the declared interval, and
+      remove archives older than the window.
