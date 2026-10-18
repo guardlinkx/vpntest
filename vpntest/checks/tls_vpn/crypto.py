@@ -26,6 +26,25 @@ BAD_SUITE_TOKENS = (
 AEAD_TOKENS = ("GCM", "CHACHA20", "CCM")
 
 
+def _ocsp_uri(cert):
+    """The OCSP responder URL from the certificate's AIA extension, if any.
+
+    Absent on certificates from issuers that have retired OCSP. Without it a
+    server physically cannot staple, so the control does not apply.
+    """
+    try:
+        from cryptography.x509 import AuthorityInformationAccess
+        from cryptography.x509.oid import AuthorityInformationAccessOID, ExtensionOID
+        aia = cert.extensions.get_extension_for_oid(
+            ExtensionOID.AUTHORITY_INFORMATION_ACCESS).value
+        for d in aia:
+            if d.access_method == AuthorityInformationAccessOID.OCSP:
+                return d.access_location.value
+    except Exception:
+        pass
+    return None
+
+
 def _is_ip(host: str) -> bool:
     import ipaddress
     try:
@@ -220,6 +239,7 @@ class TlsCertificate(Check):
                 "sans": sans,
                 "hostname_matches": hostname_ok,
                 "ocsp_stapled": dep.ocsp_response is not None,
+                "ocsp_uri": _ocsp_uri(leaf),
                 "signature": leaf.signature_hash_algorithm.name
                              if leaf.signature_hash_algorithm else None,
             }
@@ -255,7 +275,21 @@ class TlsCertificate(Check):
                     target, f"Certificate expires in {days} days", detail=info,
                     remediation="Confirm automatic renewal is running and will "
                                 "complete before expiry."))
-            if not info["ocsp_stapled"]:
+            # Stapling is only possible if the certificate names a responder.
+            # Let's Encrypt retired OCSP in 2025 — it stopped embedding
+            # responder URLs and shut the responders down, moving to CRLs — so
+            # on an LE certificate `ssl_stapling on` is a no-op that logs "no
+            # OCSP responder URL in the certificate". Warning about it would
+            # send an operator to change a setting that cannot do anything.
+            if not info["ocsp_stapled"] and not info["ocsp_uri"]:
+                findings.append(self.na(
+                    target,
+                    "The certificate carries no OCSP responder URL, so stapling "
+                    "is not possible. Issuers including Let's Encrypt have "
+                    "retired OCSP in favour of CRLs; this is the issuer's "
+                    "choice, not a server misconfiguration.",
+                    detail=info))
+            elif not info["ocsp_stapled"]:
                 # The control's catalog remediation is about the certificate
                 # itself, which is not the problem here — the cert is fine and
                 # the gap is purely a server setting. Say the actual action.

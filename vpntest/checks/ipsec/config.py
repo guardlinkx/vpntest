@@ -248,6 +248,37 @@ class CertificateValidation(Check):
         ev = ctx.evidence.data(self.id, target.host.replace(".", "_"), detail,
                                "certificate validation settings")
 
+        # Does any peer actually present a certificate?
+        #
+        # strictcrlpolicy governs validation of *peer* certificates. A gateway
+        # that authenticates clients by EAP has none to validate: the server
+        # presents `leftcert` and the client answers with a username and
+        # password, so there is no client certificate whose revocation status
+        # could be wrongly accepted. Warning here would push an operator to
+        # enable a setting that buys nothing and adds a failure mode — an
+        # unfetchable CRL then blocks every connection.
+        #
+        # `rightcert`/`rightauth=pubkey` is the thing that makes this control
+        # bite. Checked explicitly rather than inferred from the presence of
+        # `leftcert`, which every server has.
+        client_certs = bool(re.search(r"^\s*rightcert\s*=", text, re.M | re.I)) or \
+            bool(re.search(r"^\s*rightauth\s*=\s*(pubkey|rsa|ecdsa)",
+                           text, re.M | re.I))
+        eap = bool(re.search(r"^\s*rightauth\s*=\s*eap", text, re.M | re.I))
+        detail["clients_present_certificates"] = client_certs
+        detail["clients_authenticate_by_eap"] = eap
+
+        if not client_certs:
+            return [self.na(
+                target,
+                "Clients authenticate by "
+                + ("EAP" if eap else "a method other than certificates")
+                + ", so no peer certificate is ever validated and revocation "
+                  "policy has nothing to act on. Enabling strictcrlpolicy here "
+                  "would add a failure mode — an unfetchable CRL blocking "
+                  "every connection — for no security gain.",
+                evidence=[ev], detail=detail)]
+
         strict = (strictcrl.group(1).lower() in ("yes", "ifuri")
                   if strictcrl else False)
         if ca_count == 0:
