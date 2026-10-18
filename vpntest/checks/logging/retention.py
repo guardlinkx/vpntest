@@ -105,10 +105,41 @@ class ConnectionLoggingMinimised(Check):
                 problems.append(
                     f"charondebug is above audit level ({level_line.split('=', 1)[-1].strip()})")
 
+        # Any log the scope names as required to be address-free.
+        #
+        # Without this the control passes trivially on a host that runs no VPN
+        # daemon — a control plane can be writing a full client address on
+        # every request and still look clean, because nothing named charon
+        # appeared in auth.log. A web access log is connection metadata by
+        # another name.
+        ip_free = target.meta.get("logs_without_client_ips") or []
+        detail["logs_required_address_free"] = list(ip_free)
+        for path in ip_free:
+            # A full dotted quad or a global IPv6. An anonymised address ends
+            # in .0 or :: and is deliberately not matched.
+            rc, out, _ = _ssh(
+                target,
+                "sudo sh -c 'test -f %s && grep -cE "
+                "\"^([0-9]{1,3}\\.){3}(?!0 )[0-9]{1,3} |^[0-9a-f]{1,4}:[0-9a-f:]*[1-9a-f][0-9a-f]* \" "
+                "%s 2>/dev/null || echo absent'" % (path, path))
+            raw = (out or "").strip().splitlines()[-1] if out.strip() else "absent"
+            # grep -E lacks lookahead; fall back to a simpler count and
+            # subtract anonymised forms, which always end the address in .0
+            if not raw.isdigit():
+                rc, out, _ = _ssh(
+                    target,
+                    "sudo sh -c 'test -f {p} && echo $(( $(grep -cE \"^([0-9]{{1,3}}\\.){{3}}[0-9]{{1,3}} \" {p} 2>/dev/null) - "
+                    "$(grep -cE \"^([0-9]{{1,3}}\\.){{3}}0 \" {p} 2>/dev/null) )) || echo absent'".format(p=path))
+                raw = (out or "").strip().splitlines()[-1] if out.strip() else "absent"
+            detail.setdefault("address_free_logs", {})[path] = raw
+            if raw.lstrip("-").isdigit() and int(raw) > 0:
+                problems.append(
+                    f"{path} records {raw} full client address(es)")
+
         ev = ctx.evidence.data(self.id, target.host.replace(".", "_"), detail,
                                "where connection records are written")
 
-        if not detail["system_logs"] and not level_line:
+        if not detail["system_logs"] and not level_line and not ip_free:
             return [self.na(
                 target,
                 "No VPN daemon logging configuration or system log was readable "
@@ -159,11 +190,24 @@ class LogRetentionPolicy(Check):
                                   "connection_log": log_path}
 
         # Rotation configured?
+        #
+        # Searched by the log's own path, not by guessing the config file's
+        # name. Looking for files called charon/openvpn/connection missed
+        # nginx's rule — which is named "nginx" and rotates the very path in
+        # question — and reported retention as unenforced on a host where it
+        # was enforced correctly.
+        # Matched against the exact path first, then the containing directory,
+        # because a rule routinely covers a glob rather than one file —
+        # nginx's reads `/var/log/nginx/*.log`, so searching for the literal
+        # path finds nothing and the control reports an unrotated log on a host
+        # that rotates it daily.
+        log_dir = log_path.rsplit("/", 1)[0] + "/"
         rc, rot, _ = _ssh(
             target,
-            "sudo sh -c 'grep -rlE \"charon|openvpn|connection\" "
-            "/etc/logrotate.d/ 2>/dev/null | head -5' || true")
+            f"sudo sh -c 'grep -rlE \"{re.escape(log_path)}|{re.escape(log_dir)}\" "
+            "/etc/logrotate.d/ /etc/logrotate.conf 2>/dev/null | head -5' || true")
         detail["logrotate_files"] = [f for f in (rot or "").split() if f]
+        detail["logrotate_searched_for"] = [log_path, log_dir]
 
         # The real question: how old is the oldest retained record?
         rc, out, _ = _ssh(
