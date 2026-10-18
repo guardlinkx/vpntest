@@ -102,14 +102,14 @@ Setup, on macOS:
    connection to Wi-Fi, and turn it on. This creates `bridge100`.
 2. Join the phone to that Wi-Fi network.
 3. `sudo -v` in the shell you will run from — capture needs tcpdump as root.
-4. Add the device to your scope with `dut: true` (see `scope/califax.yaml`),
+4. Add the device to your scope with `dut: true` (see `scope/your-scope.yaml`),
    listing `vpn_endpoints` so tunnelled traffic can be told from a leak.
 5. Connect the VPN on the phone, confirm it reports connected, then run.
 6. **Use the phone while it captures.** Browse, stream, anything. A silent
    handset produces `n/a`, not a pass — see below.
 
 ```bash
-vpntest run --scope scope/califax.yaml --only CLI-01,CLI-02,CLI-04
+vpntest run --scope scope/your-scope.yaml --only CLI-01,CLI-02,CLI-04
 ```
 
 The capture is taken once per run and shared by all four checks, so they
@@ -157,3 +157,37 @@ duration.
   advisory lookup, never by exploitation.
 - **Deep IKE proposal enumeration** wants `ike-scan` or Scapy; the built-in
   probes establish reachability and version, not the full transform matrix.
+
+## Using this against someone else's infrastructure
+
+Don't, without written authorization. The scope file is not a formality: the
+runner re-checks it for every (check, target) pair rather than once at startup,
+so a check cannot wander onto a neighbouring host by following a redirect or a
+hostname that starts resolving elsewhere mid-run. Checks marked `disruptive`
+are skipped unless opted in by id.
+
+That design protects you as much as the target. It does not make unauthorized
+testing legal.
+
+## Contributing
+
+A control is a catalog entry plus a check class; nothing registers itself by
+hand. See **Adding a control** above.
+
+Two conventions are worth keeping, because most of the bugs found in this tool
+so far were violations of them:
+
+- **A check that cannot run reports `n/a`, never `pass`.** A clean result on a
+  test that never executed is worse than no result, because it gets trusted.
+  Say why it could not run.
+- **Prove a new check can fail.** Six passes on a brand-new control usually
+  means it cannot fail at all. Feed it a synthetic violation and confirm it
+  fires before trusting a green.
+
+Real-world addresses do not belong in test fixtures. Use the ranges reserved
+for documentation: `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` and
+`2001:db8::/32`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

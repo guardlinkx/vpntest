@@ -5,3 +5,4 @@ evidence/
 reports/
 scope/*.yaml
 !scope/example-authorization.yaml
+.DS_Store
